@@ -1,0 +1,2 @@
+v 3
+p gsample Stata module for random sampling

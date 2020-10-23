@@ -1,0 +1,8 @@
+v 3
+d gsample: Stata module for random sampling
+d 
+d Author: Ben Jann, University of Bern, ben.jann@soz.unibe.ch
+d
+d Distribution-Date: 20201024
+f gsample.ado
+f gsample.hlp
