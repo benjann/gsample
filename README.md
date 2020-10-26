@@ -28,6 +28,15 @@ Installation from GitHub:
 
 Main changes:
 
+    25oct2020 (version 1.0.8)
+    - new -rround- option for random-rounding of sample sized across strata
+    - new -nopreserve- option to avoid restoring data in case of error or Break; not
+      relevant if -generate()- is specified
+    - changed approach to preserve data (not relevant if -generate()- is specified);
+      earlier versions used -nobreak- and -capture- to make sure that the data will
+      be preserved on error, but this meant that the user could not stop -gsample-
+      once it was running; this is fixed
+
     23oct2020 (version 1.0.7)
     - released on GitHub
     - gsample could break if a noninteger sample size was specified; this is fixed;

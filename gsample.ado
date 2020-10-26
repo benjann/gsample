@@ -1,4 +1,4 @@
-*! version 1.0.7  23oct2020  Ben Jann
+*! version 1.0.8  25oct2020  Ben Jann
 
 capt mata mata which mm_sample()
 if _rc {
@@ -8,6 +8,8 @@ if _rc {
 
 program gsample
     version 9.2
+    
+    // syntax
     qui syntax [anything(name=n)] [if] [in] [iw aw] [, ///
       Generate(name)   /// store sample counts in newvar
       Percent          /// information in n is percentage
@@ -19,20 +21,24 @@ program gsample
       Replace          /// replace existing variables
       alt              /// use alternative (faster) algorithm for SRSWOR
       NOWARN           /// allow repetitions in UPSWOR
+      RRound           /// random round; only relevant if strata() specified
+      NOPReserve       /// do not preserve data
       ]
-    if `"`idcluster'"'!="" & `"`cluster'"'=="" {
+    if "`idcluster'"!="" & "`cluster'"=="" {
         di as err "idcluster() can only be specified with the cluster() option"
         exit 198
     }
     if "`replace'"=="" {
-        if `"`generate'"'!="" confirm new var `generate', exact
-        if `"`idcluster'"'!="" confirm new var `idcluster', exact
+        if "`generate'"!=""  confirm new var `generate'
+        if "`idcluster'"!="" confirm new var `idcluster'
     }
     if `"`n'"'=="" local n .
     if `"`n'"'!="." {
         capt confirm number `n'
         if _rc unab nvar: `n', max(1)
     }
+    
+    // sample and weights
     marksample touse, zeroweight
     markout `touse' `strata' `cluster', strok
     qui count if `touse'
@@ -56,125 +62,84 @@ program gsample
         }
     }
     else local wgt
-    if `"`strata'`cluster'"'=="" & `"`generate'"'=="" {
-        _gsample1 `n' `"`nvar'"' `N' `Nout' `touse' `"`wgt'"' ///
-         `"`generate'"' `"`wor'"' `"`percent'"' `"`keep'"' `"`replace'"' ///
-         "`alt'" "`nowarn'"
-        exit
+    
+    // settings depending on type of sampling
+    if `"`wgt'"'!="" | "`wor'"=="" local alt    // alt only relevant for SRSWOR
+    if `"`wgt'"'=="" | "`wor'"=="" local nowarn // nowarn only relevant for USPWOR
+    if "`strata'"==""   local rround            // rround only relevant with strata()
+    if "`strata'`cluster'"=="" {
+        if "`generate'"=="" {
+            local stype "1"
+        }
+        else {
+            local stype "1g"
+            local local nopreserve nopreserve
+        }
     }
-    if `"`strata'`cluster'"'=="" {
-        _gsample1g `n' `"`nvar'"' `N' `Nout' `touse' `"`wgt'"' ///
-         `"`generate'"' `"`wor'"' `"`percent'"' `"`keep'"' `"`replace'"' ///
-         "`alt'" "`nowarn'"
-        exit
+    else {
+        if "`generate'"=="" {
+            local stype "2"
+        }
+        else {
+            local stype "2g"
+            local local nopreserve nopreserve
+        }
     }
-    if `"`generate'"'=="" {
-        _gsample2 `n' `"`nvar'"' `N' `Nout' `touse' `"`wgt'"' ///
-         `"`generate'"' `"`wor'"' `"`percent'"' `"`keep'"' `"`replace'"' ///
-         `"`strata'"' `"`cluster'"' `"`idcluster'"' ///
-         "`alt'" "`nowarn'"
-        exit
-    }
-    _gsample2g `n' `"`nvar'"' `N' `Nout' `touse' `"`wgt'"' ///
-     `"`generate'"' `"`wor'"' `"`percent'"' `"`keep'"' `"`replace'"' ///
-     `"`strata'"' `"`cluster'"' `"`idcluster'"' ///
-     "`alt'" "`nowarn'"
+    
+    // apply sampling
+    if "`nopreserve'"=="" preserve
+    capture noisily _gsample`stype' /*
+        */ `n' "`nvar'" `N' `Nout' `touse' `"`wgt'"' "`generate'" /*
+        */ "`wor'" "`percent'" "`keep'" "`alt'" /*
+        */ "`nowarn'" "`rround'" "`strata'" "`cluster'" "`idcluster'"
+    if _rc exit _rc
+    if "`nopreserve'"=="" restore, not
 end
 
 program _gsample1 // no strata, no clusters, return sample
-    args n nvar N Nout touse wgt generate wor percent keep replace alt nowarn
-    if `"`nvar'"'!="" {
+    args n nvar N Nout touse wgt generate wor percent keep alt nowarn
+    if "`nvar'"!="" {
         su `nvar' if `touse', mean
         local n = r(mean)
     }
     tempvar sortindex index
     if `Nout' {
         gen long `sortindex' = _n
-        capture noisily {
-            sort `touse' `sortindex'
-            gen long `index' = _n * (!`touse' & `"`keep'"'!="")
-            mata: _gsample1()
-        }
-        if _rc {
-            sort `sortindex'
-            exit _rc
-        }
+        sort `touse' `sortindex'
+        gen long `index' = _n * (!`touse' & `"`keep'"'!="")
     }
     else {
         gen long `index' = 0
-        mata: _gsample1()
     }
+    mata: _gsample1()
     keep if `index'
     sort `index'
 end
 
 program _gsample1g // no strata, no clusters, return count variable
-    args n nvar N Nout touse wgt generate wor percent keep replace alt nowarn
-    if `"`nvar'"'!="" {
+    args n nvar N Nout touse wgt generate wor percent keep alt nowarn
+    if "`nvar'"!="" {
         su `nvar' if `touse', mean
         local n = r(mean)
     }
     tempvar index
     qui gen long `index' = (!`touse') * (`"`keep'"'!="")
     mata: _gsample1g()
-    Vdrop `generate' `replace'
-    rename `index' `generate'
-//  if `"`keep'"'=="" & `Nout' keep if `touse'
+    nobreak {
+        capt confirm new variable `generate'
+        if _rc drop `generate'
+        rename `index' `generate'
+    }
+    // if "`keep'"=="" & `Nout' keep if `touse'
 end
 
-program _gsample2 // stratified/custered, return sample
-    args n nvar N Nout touse wgt generate wor percent keep replace ///
-     strata cluster idcluster alt nowarn
+program _gsample2 // stratified/clustered, return sample
+    args n nvar N Nout touse wgt generate wor percent keep alt nowarn ///
+        rround strata cluster idcluster
     tempvar sortindex index
     gen long `sortindex' = _n
-    capture noisily {
-        sort `touse' `strata' `cluster' `sortindex'
-        if `"`strata'"'!="" {
-            capt confirm str var `strata'
-            if `: list sizeof strata'==1 & _rc local sid "`strata'"
-            else {
-                tempvar sid
-                by `touse' `strata': gen byte `sid' = (_n == 1)
-                qui replace `sid' = sum(`sid')
-            }
-        }
-        if `"`cluster'"'!="" {
-            capt confirm str var `cluster'
-            if `: list sizeof cluster'==1 & _rc & `"`idcluster'"'=="" ///
-                local cid "`cluster'"
-            else {
-                tempvar cid
-                by `touse' `strata' `cluster': gen byte `cid' = (_n == 1)
-                qui replace `cid' = sum(`cid')
-            }
-        }
-        else local idcluster
-        gen long `index' = 0
-        if `Nout' & `"`keep'"'!="" qui replace `index' = _n if !`touse'
-        mata: _gsample2()
-    }
-    if _rc {
-        sort `sortindex'
-        exit _rc
-    }
-    keep if `index'
-    if `"`idcluster'"'!="" {
-        Vdrop `idcluster' `replace'
-        bys `touse' `strata' `cluster' `sortindex' (`index'): ///
-         gen long `idcluster' = _n
-        qui bys `touse' `strata' `cluster' `idcluster' (`sortindex'): ///
-         replace `idcluster' = (_n==1)
-        sort `index'
-        qui replace `idcluster' = sum(`idcluster')
-    }
-    else sort `index'
-end
-
-program _gsample2g, sort // stratified/custered, return count variable
-    args n nvar N Nout touse wgt generate wor percent keep replace ///
-     strata cluster idcluster alt nowarn
-    sort `touse' `strata' `cluster' `_sortindex' // => stable sort order
-    if `"`strata'"'!="" {
+    sort `touse' `strata' `cluster' `sortindex'
+    if "`strata'"!="" {
         capt confirm str var `strata'
         if `: list sizeof strata'==1 & _rc local sid "`strata'"
         else {
@@ -183,10 +148,54 @@ program _gsample2g, sort // stratified/custered, return count variable
             qui replace `sid' = sum(`sid')
         }
     }
-    if `"`cluster'"'!="" {
+    if "`cluster'"!="" {
         capt confirm str var `cluster'
-        if `: list sizeof cluster'==1 & _rc & `"`idcluster'"'=="" ///
-         local cid "`cluster'"
+        if `: list sizeof cluster'==1 & _rc & "`idcluster'"=="" ///
+            local cid "`cluster'"
+        else {
+            tempvar cid
+            by `touse' `strata' `cluster': gen byte `cid' = (_n == 1)
+            qui replace `cid' = sum(`cid')
+        }
+    }
+    else local idcluster
+    gen long `index' = 0
+    if `Nout' & "`keep'"!="" qui replace `index' = _n if !`touse'
+    mata: _gsample2()
+    keep if `index'
+    if "`idcluster'"!="" {
+        tempvar newid
+        bys `touse' `strata' `cluster' `sortindex' (`index'): ///
+            gen long `newid' = _n
+        qui bys `touse' `strata' `cluster' `newid' (`sortindex'): ///
+             replace `newid' = (_n==1)
+    }
+    sort `index'
+    if "`idcluster'"!="" {
+        qui replace `newid' = sum(`newid')
+        capt confirm new variable `idcluster'
+        if _rc drop `idcluster'
+        rename `newid' `idcluster'
+    }
+end
+
+program _gsample2g, sort // stratified/clustered, return count variable
+    args n nvar N Nout touse wgt generate wor percent keep alt nowarn ///
+        rround strata cluster idcluster
+    sort `touse' `strata' `cluster' `_sortindex' // => stable sort order
+    if "`strata'"!="" {
+        capt confirm str var `strata'
+        if `: list sizeof strata'==1 & _rc local sid "`strata'"
+        else {
+            tempvar sid
+            by `touse' `strata': gen byte `sid' = (_n == 1)
+            qui replace `sid' = sum(`sid')
+        }
+    }
+    if "`cluster'"!="" {
+        capt confirm str var `cluster'
+        if `: list sizeof cluster'==1 & _rc & "`idcluster'"=="" ///
+            local cid "`cluster'"
         else {
             tempvar cid
             by `touse' `strata' `cluster': gen byte `cid' = (_n == 1)
@@ -195,23 +204,23 @@ program _gsample2g, sort // stratified/custered, return count variable
     }
     else local idcluster
     tempvar index
-    qui gen long `index' = (!`touse') * (`"`keep'"'!="")
+    qui gen long `index' = (!`touse') * ("`keep'"!="")
     mata: _gsample2g()
-//  if `"`keep'"'=="" qui keep if `touse'
-    Vdrop `generate' `replace'
-    rename `index' `generate'
-    if `"`idcluster'"'!="" {
-        Vdrop `idcluster' `replace'
-        by `touse' `strata' `cluster': gen byte `idcluster' = (_n == 1)
-        qui replace `idcluster' = sum(`idcluster')
+    // if "`keep'"=="" qui keep if `touse'
+    if "`idcluster'"!="" {
+        tempvar newid
+        by `touse' `strata' `cluster': gen byte `newid' = (_n == 1)
+        qui replace `newid' = sum(`newid')
     }
-end
-
-program Vdrop
-    args name replace
-    if "`replace'"!="" {
-        capt confirm var `name', exact
-        if !_rc drop `name'
+    nobreak {
+        capt confirm new variable `generate'
+        if _rc drop `generate'
+        rename `index' `generate'
+        if "`idcluster'"!="" {
+            capt confirm new variable `idcluster'
+            if _rc drop `idcluster'
+            rename `newid' `idcluster'
+        }
     }
 end
 
@@ -219,7 +228,7 @@ version 9.1
 mata:
 void _gsample1()
 {
-// variables
+    // variables
     touse  = st_varindex(st_local("touse"))
     index  = st_varindex(st_local("index"))
     w      = _st_varindex(st_local("wgt"))
@@ -228,21 +237,23 @@ void _gsample1()
     Nout   = strtoreal(st_local("Nout"))
     alt    = st_local("alt")!=""
     nowarn = st_local("nowarn")!=""
-// sample size / weights / population size
+    // sample size / weights / population size
     n = strtoreal(st_local("n"))
     N = strtoreal(st_local("N"))
     if (w<.) st_view(w, ., w, touse)
     if (pct) n = round(N/100 :* n)
     else     n = round(n)
-// draw sample
-    s = Nout :+ mm_sample(n, N, ., w, wor, 0, 1, alt, nowarn)
+    // draw sample
+    if (alt | nowarn) s = mm_sample(n, N, ., w, wor, 0, 1, alt, nowarn)
+    else              s = mm_sample(n, N, ., w, wor, 0, 1) // old syntax
+    s = Nout :+ s
     if (wor==0 | nowarn) _gsample_expand(s, index)
     if (rows(s)>0) st_store(s, index, touse, (Nout+1::Nout+rows(s)))
 }
 
 void _gsample1g()
 {
-// variables
+    // variables
     touse  = st_varindex(st_local("touse"))
     index  = st_varindex(st_local("index"))
     w      = _st_varindex(st_local("wgt"))
@@ -250,20 +261,22 @@ void _gsample1g()
     pct    = st_local("percent")!=""
     alt    = st_local("alt")!=""
     nowarn = st_local("nowarn")!=""
-// sample size / weights / population size
+    // sample size / weights / population size
     n = strtoreal(st_local("n"))
     N = strtoreal(st_local("N"))
     if (w<.) st_view(w, ., w, touse)
     if (pct) n = round(N/100 :* n)
     else     n = round(n)
-// draw sample
-    st_store(., index, touse, mm_sample(n, N, ., w, wor, 1, 1, alt, nowarn))
+    // draw sample
+    if (alt | nowarn) s = mm_sample(n, N, ., w, wor, 1, 1, alt, nowarn)
+    else              s = mm_sample(n, N, ., w, wor, 1, 1) // old syntax
+    st_store(., index, touse, s)
 }
 
 void _gsample2()
 {
     real colvector strata, cluster
-// variables
+    // variables
     touse  = st_varindex(st_local("touse"))
     index  = st_varindex(st_local("index"))
     sid    = _st_varindex(st_local("sid"))
@@ -276,25 +289,29 @@ void _gsample2()
     N      = strtoreal(st_local("N"))
     alt    = st_local("alt")!=""
     nowarn = st_local("nowarn")!=""
-// strata/clusters
+    rround = st_local("rround")!=""
+    // strata/clusters
     if (sid<.) st_view(strata, ., sid, touse)
     if (cid<.) st_view(cluster, ., cid, touse)
     mm_panels(strata, S=J(1,2,N), cluster, C=.)
-// weights
+    // weights
     if (w<.) {
         if (cid<.) st_view(w, Nout :+ mm_colrunsum(C[.,1]), w, touse)
         else st_view(w, ., w, touse)
     }
-// sample size
+    // sample size
     if (nvar<.) {
         if (sid<.) n = st_data(Nout :+ mm_colrunsum(S[.,1]), nvar)
         else n = _st_data(Nout+1, nvar)
     }
     else n = strtoreal(st_local("n"))
-    if (pct) n = round(S[.,2]/100 :* n)
-    else     n = round(n)
-// draw sample
-    s = Nout :+ mm_sample(n, S, C, w, wor, 0, 1, alt, nowarn)
+    if (pct)    n = S[.,2]/100 :* n
+    if (rround) n = _gsample_rround(n)
+    else        n = round(n)
+    // draw sample
+    if (alt | nowarn) s = mm_sample(n, S, C, w, wor, 0, 1, alt, nowarn)
+    else              s = mm_sample(n, S, C, w, wor, 0, 1) // old syntax
+    s = Nout :+ s
     if (wor==0 | nowarn) _gsample_expand(s, index)
     if (rows(s)>0) st_store(s, index, touse, (Nout+1::Nout+rows(s)))
 }
@@ -315,6 +332,7 @@ void _gsample2g()
     N      = strtoreal(st_local("N"))
     alt    = st_local("alt")!=""
     nowarn = st_local("nowarn")!=""
+    rround = st_local("rround")!=""
 // strata/clusters
     if (sid<.) st_view(strata, ., sid, touse)
     if (cid<.) st_view(cluster, ., cid, touse)
@@ -330,10 +348,23 @@ void _gsample2g()
         else n = _st_data(Nout+1, nvar)
     }
     else n = strtoreal(st_local("n"))
-    if (pct) n = round(S[.,2]/100 :* n)
-    else     n = round(n)
+    if (pct)    n = S[.,2]/100 :* n
+    if (rround) n = _gsample_rround(n)
+    else        n = round(n)
 // draw sample
-    st_store(., index, touse, mm_sample(n, S, C, w, wor, 1, 1, alt, nowarn))
+    if (alt | nowarn) s = mm_sample(n, S, C, w, wor, 1, 1, alt, nowarn)
+    else              s = mm_sample(n, S, C, w, wor, 1, 1) // old syntax
+    st_store(., index, touse, s)
+}
+
+real colvector _gsample_rround(real colvector n)
+{
+    r = rows(n)
+    if (r==1) return(round(n))
+    n0 = trunc(n)
+    N = round(sum(n)) - sum(n0)
+    if (N==0) return(n0)
+    return(n0 + mm_upswor(N, n-n0, 1))
 }
 
 void _gsample_expand(real colvector s, real scalar index)
