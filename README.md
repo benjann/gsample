@@ -21,7 +21,7 @@ package is required. To install `moremata` from the SSC Archive, type
 
 Installation from GitHub:
 
-    . net install reldist, replace from(https://raw.githubusercontent.com/benjann/gsample/master/)
+    . net install gsample, replace from(https://raw.githubusercontent.com/benjann/gsample/main/)
     . net install moremata, replace from(https://raw.githubusercontent.com/benjann/moremata/master/)
 
 ---
